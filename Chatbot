@@ -1,0 +1,50 @@
+
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+
+nltk.download("punkt", quiet=True)
+nltk.download("punkt_tab", quiet=True)
+nltk.download("wordnet", quiet=True)
+nltk.download("omw-1.4", quiet=True)
+
+lemmatizer = WordNetLemmatizer()
+
+MENU = {
+    "coffee": 4.50,
+    "latte": 5.00,
+    "cappuccino": 5.00,
+    "iced coffee": 5.50,
+    "iced latte": 6.00,
+    "hot chocolate": 5.50,
+    "tea": 4.00,
+    "chai latte": 5.50,
+    "expresso": 3.50,
+    "cold brew": 5.50,
+    "croissant": 4.50,
+    "muffin": 4.00
+}
+
+SIZES = {
+    "small": 0.00,
+    "medium": 0.00,
+    "large": 0.50
+}
+
+MILKS = ["regular", "oat", "almond", "soy"]
+
+NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12
+}
+
