@@ -48,3 +48,39 @@ NUMBER_WORDS = {
     "twelve": 12
 }
 
+
+def get_tokens(sentence):
+    """Lowercase and tokenise the user's sentence."""
+    sentence = sentence.lower()
+    return word_tokenize(sentence)
+
+
+def lemmatise_tokens(tokens):
+    """Lemmatise words so singular and plural forms can match."""
+    lemmas = []
+
+    for token in tokens:
+        if token.isalpha():
+            lemmas.append(lemmatizer.lemmatize(token))
+
+    return lemmas
+
+
+def number_from_word(word):
+    """Turn a number or number word into an integer."""
+    if word in NUMBER_WORDS:
+        return NUMBER_WORDS[word]
+
+    if word.isdigit():
+        return int(word)
+
+    return None
+
+
+def get_size(tokens):
+    """Find the requested size."""
+    for token in tokens:
+        if token in SIZES:
+            return token
+
+    return "medium"
