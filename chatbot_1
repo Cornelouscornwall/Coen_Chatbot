@@ -1,0 +1,570 @@
+"""
+Smart Bot - VEX Ordering System
+================================
+
+Flowchart / logic design
+------------------------
+START
+  |
+  V
+Welcome the user and explain the VEX ordering system
+  |
+  V
+Ask: What parts would you like to order?
+  |
+  +-- if a part is found in the VEX database
+  |       -> add it to the cart
+  |
+  +-- else
+          -> tell the user to try a valid product name or SKU
+  |
+  V
+Ask: Would you like to add more parts?
+  |
+  +-- yes -> return to the part selection step
+  |
+  +-- no -> move to checkout
+  |
+  V
+Display the order summary and total price
+  |
+  V
+Ask: Would you like to confirm the order?
+  |
+  +-- yes -> ask for an email address and send the order summary
+  |
+  +-- no -> cancel the order and exit
+  |
+  V
+END
+
+Peer testing and refinement
+---------------------------
+- Break It Test: typed different word forms such as 'motor', 'motors', and 'wheel' to confirm the keyword matching still works.
+- Noise Test: entered filler-heavy sentences to test whether the bot still recognised the correct VEX part.
+- Refinement: added lemmatisation so words such as 'motors' and 'running' still match the correct database item when relevant.
+
+This script uses:
+- lowercase normalization
+- tokenization with word_tokenize()
+- lemmatisation with WordNetLemmatizer()
+- while-loop ordering flow
+- checkout + confirmation + email sending
+"""
+
+import os
+import random
+import re
+import smtplib
+import string
+from email.message import EmailMessage
+
+import nltk
+from nltk.stem import WordNetLemmatizer
+from nltk.tokenize import word_tokenize
+
+
+# ---------------------------------------------------------------------------
+# 1. NLTK SETUP
+# ---------------------------------------------------------------------------
+
+def setup_nltk():
+    """Download missing NLTK resources safely."""
+    resources = [
+        ("tokenizers/punkt", "punkt"),
+        ("tokenizers/punkt_tab", "punkt_tab"),
+        ("corpora/wordnet", "wordnet"),
+        ("corpora/omw-1.4", "omw-1.4"),
+    ]
+
+    for resource_path, package_name in resources:
+        try:
+            nltk.data.find(resource_path)
+        except (LookupError, OSError, FileNotFoundError):
+            try:
+                nltk.download(package_name, quiet=True)
+            except Exception:
+                pass
+
+
+setup_nltk()
+lemmatizer = WordNetLemmatizer()
+
+BOT_NAME = "VEX Smart Bot"
+EXIT_COMMANDS = {"quit", "exit", "bye", "goodbye", "stop"}
+
+# Default SMTP settings for automatic autofill.
+# Change these to your real Gmail/Outlook details before running the bot.
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USER = "your_email@gmail.com"
+SMTP_PASS = "your_app_password_here"
+SMTP_FROM = "your_email@gmail.com"
+
+
+# ---------------------------------------------------------------------------
+# 2. VEX PART DATABASE
+# ---------------------------------------------------------------------------
+
+VEX_DATABASE = {
+    "v5 robot brain": {"sku": "276-4810", "price": 64.99, "category": "electronics"},
+    "v5 robot battery li ion 1100mah": {"sku": "276-4811", "price": 39.99, "category": "electronics"},
+    "v5 robot battery charger": {"sku": "276-4812", "price": 24.99, "category": "electronics"},
+    "v5 controller": {"sku": "276-4820", "price": 89.99, "category": "electronics"},
+    "v5 robot radio": {"sku": "276-4831", "price": 49.99, "category": "electronics"},
+    "v5 smart motor": {"sku": "276-4840", "price": 64.99, "category": "motors"},
+    "v5 smart motor gear cartridge 36 1 100 rpm red": {"sku": "276-8438", "price": 16.99, "category": "motors"},
+    "v5 smart motor gear cartridge 18 1 200 rpm green": {"sku": "276-8437", "price": 16.99, "category": "motors"},
+    "v5 smart motor gear cartridge 6 1 600 rpm blue": {"sku": "276-8436", "price": 16.99, "category": "motors"},
+    "exp smart motor": {"sku": "276-7570", "price": 39.99, "category": "motors"},
+    "v5 vision sensor": {"sku": "276-4850", "price": 79.99, "category": "sensors"},
+    "ai vision sensor": {"sku": "276-8515", "price": 109.99, "category": "sensors"},
+    "v5 optical sensor": {"sku": "276-4859", "price": 29.99, "category": "sensors"},
+    "v5 distance sensor": {"sku": "276-4858", "price": 59.99, "category": "sensors"},
+    "v5 inertial sensor": {"sku": "276-4857", "price": 49.99, "category": "sensors"},
+    "v5 rotation sensor": {"sku": "276-4856", "price": 42.99, "category": "sensors"},
+    "bumper switch v2": {"sku": "276-2159", "price": 14.99, "category": "sensors"},
+    "limit switch v2": {"sku": "276-2174", "price": 14.99, "category": "sensors"},
+    "potentiometer v2": {"sku": "276-2216", "price": 15.99, "category": "sensors"},
+    "quadrature shaft encoder": {"sku": "276-2156", "price": 24.99, "category": "sensors"},
+    "line tracker": {"sku": "276-2153", "price": 18.99, "category": "sensors"},
+    "ultrasonic range finder": {"sku": "276-2155", "price": 29.99, "category": "sensors"},
+    "v5 smart cable 300mm 4 pack": {"sku": "276-2168", "price": 17.99, "category": "cables"},
+    "v5 smart cable 600mm 4 pack": {"sku": "276-2169", "price": 19.99, "category": "cables"},
+    "v5 smart cable 1000mm 3 pack": {"sku": "276-2170", "price": 22.99, "category": "cables"},
+    "v5 smart cable stock 300 ft": {"sku": "276-7010", "price": 39.99, "category": "cables"},
+    "v5 smart cable crimper connectors": {"sku": "276-7011", "price": 34.99, "category": "cables"},
+    "2 75 inch omni directional wheel 2 pack": {"sku": "276-2177", "price": 19.99, "category": "wheels"},
+    "3 25 inch omni directional wheel 2 pack": {"sku": "276-2165", "price": 21.99, "category": "wheels"},
+    "4 inch omni directional wheel 2 pack": {"sku": "276-2185", "price": 23.99, "category": "wheels"},
+    "2 75 inch traction wheel 2 pack": {"sku": "276-2178", "price": 18.99, "category": "wheels"},
+    "3 25 inch traction wheel 2 pack": {"sku": "276-2166", "price": 20.99, "category": "wheels"},
+    "4 inch traction wheel 2 pack": {"sku": "276-2186", "price": 22.99, "category": "wheels"},
+    "5 inch traction wheel 2 pack": {"sku": "276-1499", "price": 25.99, "category": "wheels"},
+    "4 inch mecanum wheel set 4 pack": {"sku": "276-2167", "price": 59.99, "category": "wheels"},
+    "1 625 inch flex wheel 85a 4 pack": {"sku": "276-6010", "price": 17.99, "category": "flex wheels"},
+    "2 inch flex wheel 85a 4 pack": {"sku": "276-6011", "price": 18.99, "category": "flex wheels"},
+    "3 inch flex wheel 85a 4 pack": {"sku": "276-6012", "price": 19.99, "category": "flex wheels"},
+    "4 inch flex wheel 85a 4 pack": {"sku": "276-6013", "price": 21.99, "category": "flex wheels"},
+    "1 625 inch flex wheel 60a 4 pack": {"sku": "276-6014", "price": 17.99, "category": "flex wheels"},
+    "2 inch flex wheel 60a 4 pack": {"sku": "276-6015", "price": 18.99, "category": "flex wheels"},
+    "3 inch flex wheel 60a 4 pack": {"sku": "276-6016", "price": 19.99, "category": "flex wheels"},
+    "4 inch flex wheel 60a 4 pack": {"sku": "276-6017", "price": 21.99, "category": "flex wheels"},
+    "1 625 inch flex wheel 30a 4 pack": {"sku": "276-6018", "price": 17.99, "category": "flex wheels"},
+    "2 inch flex wheel 30a 4 pack": {"sku": "276-6019", "price": 18.99, "category": "flex wheels"},
+    "3 inch flex wheel 30a 4 pack": {"sku": "276-6020", "price": 19.99, "category": "flex wheels"},
+    "4 inch flex wheel 30a 4 pack": {"sku": "276-6021", "price": 21.99, "category": "flex wheels"},
+    "flex wheel high strength adapters": {"sku": "276-3876", "price": 9.99, "category": "flex wheels"},
+    "high strength spur gear kit": {"sku": "276-2169", "price": 34.99, "category": "gears"},
+    "high strength gear v2 12t 8 pack": {"sku": "276-5121", "price": 19.99, "category": "gears"},
+    "high strength gear v2 36t 4 pack": {"sku": "276-5122", "price": 21.99, "category": "gears"},
+    "high strength gear v2 60t 2 pack": {"sku": "276-5123", "price": 23.99, "category": "gears"},
+    "high strength gear v2 84t 2 pack": {"sku": "276-5124", "price": 25.99, "category": "gears"},
+    "high strength chain sprocket kit": {"sku": "276-2181", "price": 39.99, "category": "gears"},
+    "high strength chain 140 links": {"sku": "276-8328", "price": 19.99, "category": "gears"},
+    "rack pinion bracket kit": {"sku": "276-2163", "price": 29.99, "category": "gears"},
+    "differential bevel gear pack": {"sku": "276-2172", "price": 28.99, "category": "gears"},
+    "worm gear box kit": {"sku": "276-2164", "price": 26.99, "category": "gears"},
+    "1x2x1x35 aluminum c channel 4 pack": {"sku": "276-2016", "price": 18.99, "category": "aluminum"},
+    "1x2x1x25 aluminum c channel 4 pack": {"sku": "276-2017", "price": 17.99, "category": "aluminum"},
+    "1x3x1x35 aluminum c channel 4 pack": {"sku": "276-2018", "price": 19.99, "category": "aluminum"},
+    "1x5x1x35 aluminum c channel 2 pack": {"sku": "276-2019", "price": 22.99, "category": "aluminum"},
+    "1x1x35 aluminum angle 4 pack": {"sku": "276-2020", "price": 15.99, "category": "aluminum"},
+    "2x2x35 aluminum angle 2 pack": {"sku": "276-2021", "price": 17.99, "category": "aluminum"},
+    "1x2x1x35 steel c channel 4 pack": {"sku": "276-2121", "price": 21.99, "category": "steel"},
+    "1x3x1x35 steel c channel 4 pack": {"sku": "276-2122", "price": 22.99, "category": "steel"},
+    "1x5x1x35 steel c channel 2 pack": {"sku": "276-2123", "price": 25.99, "category": "steel"},
+    "1x1x35 steel angle 4 pack": {"sku": "276-2124", "price": 15.99, "category": "steel"},
+    "1x25 steel flat bar 8 pack": {"sku": "276-2125", "price": 19.99, "category": "steel"},
+    "5x25 steel flat plate 2 pack": {"sku": "276-2126", "price": 32.99, "category": "steel"},
+    "30 degree flat gusset 10 pack": {"sku": "276-2288", "price": 12.99, "category": "gussets"},
+    "45 degree flat gusset 10 pack": {"sku": "276-2289", "price": 12.99, "category": "gussets"},
+    "60 degree flat gusset 10 pack": {"sku": "276-2290", "price": 12.99, "category": "gussets"},
+    "90 degree flat gusset 10 pack": {"sku": "276-2291", "price": 12.99, "category": "gussets"},
+    "angle corner gusset 10 pack": {"sku": "276-2292", "price": 15.99, "category": "gussets"},
+    "c channel coupler gusset 10 pack": {"sku": "276-2293", "price": 14.99, "category": "gussets"},
+    "v5 pneumatics kit double acting": {"sku": "276-8341", "price": 149.99, "category": "pneumatics"},
+    "pneumatic cylinder double acting 25mm stroke": {"sku": "276-8342", "price": 34.99, "category": "pneumatics"},
+    "pneumatic cylinder double acting 50mm stroke": {"sku": "276-8343", "price": 39.99, "category": "pneumatics"},
+    "pneumatic solenoid driver cable": {"sku": "276-8344", "price": 18.99, "category": "pneumatics"},
+    "pneumatics air reservoir 200ml": {"sku": "276-8345", "price": 22.99, "category": "pneumatics"},
+    "pneumatic pressure regulator": {"sku": "276-8346", "price": 26.99, "category": "pneumatics"},
+    "pneumatic on off shutoff valve": {"sku": "276-8347", "price": 18.99, "category": "pneumatics"},
+    "4mm pneumatic tubing 4m spool": {"sku": "276-8348", "price": 16.99, "category": "pneumatics"},
+    "star drive screw 8 32 x 0 250 100 pack": {"sku": "276-6101", "price": 8.99, "category": "hardware"},
+    "star drive screw 8 32 x 0 375 100 pack": {"sku": "276-6102", "price": 9.99, "category": "hardware"},
+    "star drive screw 8 32 x 0 500 100 pack": {"sku": "276-6103", "price": 10.99, "category": "hardware"},
+    "star drive screw 8 32 x 0 625 100 pack": {"sku": "276-6104", "price": 11.99, "category": "hardware"},
+    "star drive screw 8 32 x 0 750 100 pack": {"sku": "276-6105", "price": 12.99, "category": "hardware"},
+    "star drive screw 8 32 x 1 000 100 pack": {"sku": "276-6106", "price": 13.99, "category": "hardware"},
+    "star drive screw 8 32 x 1 500 50 pack": {"sku": "276-6107", "price": 12.99, "category": "hardware"},
+    "star drive screw 8 32 x 2 000 50 pack": {"sku": "276-6108", "price": 14.99, "category": "hardware"},
+    "hex nut 8 32 100 pack": {"sku": "276-2010", "price": 3.99, "category": "hardware"},
+    "nylock nut 8 32 100 pack": {"sku": "276-2011", "price": 4.99, "category": "hardware"},
+    "kep nut 8 32 100 pack": {"sku": "276-2012", "price": 4.99, "category": "hardware"},
+    "bearing flat 20 pack": {"sku": "276-2015", "price": 9.99, "category": "hardware"},
+    "high strength shaft bearing 10 pack": {"sku": "276-1210", "price": 14.99, "category": "hardware"},
+    "high strength clamping shaft collar 8 pack": {"sku": "276-8032", "price": 19.99, "category": "hardware"},
+    "rubber shaft collar 30 pack": {"sku": "276-2014", "price": 7.99, "category": "hardware"},
+    "metal clamping shaft collar 10 pack": {"sku": "276-2022", "price": 10.99, "category": "hardware"},
+    "standard steel shaft 12 inch 4 pack": {"sku": "276-2161", "price": 12.99, "category": "hardware"},
+    "high strength steel shaft 12 inch 4 pack": {"sku": "276-3522", "price": 18.99, "category": "hardware"},
+    "0 5 inch standoff 8 32 30 pack": {"sku": "276-1010", "price": 5.99, "category": "hardware"},
+    "1 0 inch standoff 8 32 30 pack": {"sku": "276-1011", "price": 6.99, "category": "hardware"},
+    "1 5 inch standoff 8 32 30 pack": {"sku": "276-1012", "price": 7.99, "category": "hardware"},
+    "2 0 inch standoff 8 32 30 pack": {"sku": "276-1013", "price": 8.99, "category": "hardware"},
+    "3 0 inch standoff 8 32 20 pack": {"sku": "276-1014", "price": 10.99, "category": "hardware"},
+    "linear motion kit": {"sku": "276-2184", "price": 49.99, "category": "hardware"},
+    "v5 robot battery": {"sku": "276-4811", "price": 39.99, "category": "electronics"},
+    "vex c channel": {"sku": "276-2016", "price": 18.99, "category": "aluminum"},
+    "c channel": {"sku": "276-2016", "price": 18.99, "category": "aluminum"},
+    "aluminum c channel": {"sku": "276-2016", "price": 18.99, "category": "aluminum"},
+    "steel c channel": {"sku": "276-2121", "price": 21.99, "category": "steel"},
+    "angle": {"sku": "276-2020", "price": 15.99, "category": "aluminum"},
+    "gusset": {"sku": "276-2288", "price": 12.99, "category": "gussets"},
+    "bearing": {"sku": "276-2015", "price": 9.99, "category": "hardware"},
+    "motor": {"sku": "276-4840", "price": 64.99, "category": "motors"},
+    "wheel": {"sku": "276-2178", "price": 18.99, "category": "wheels"},
+    "brain": {"sku": "276-4810", "price": 64.99, "category": "electronics"},
+    "controller": {"sku": "276-4820", "price": 89.99, "category": "electronics"},
+    "sensor": {"sku": "276-4858", "price": 59.99, "category": "sensors"},
+    "gear": {"sku": "276-2169", "price": 34.99, "category": "gears"},
+    "shaft": {"sku": "276-2161", "price": 12.99, "category": "hardware"},
+    "screw": {"sku": "276-6101", "price": 8.99, "category": "hardware"},
+    "nut": {"sku": "276-2010", "price": 3.99, "category": "hardware"},
+    "standoff": {"sku": "276-1010", "price": 5.99, "category": "hardware"},
+    "pneumatic": {"sku": "276-8341", "price": 149.99, "category": "pneumatics"},
+};
+# ---------------------------------------------------------------------------
+# 3. TEXT PROCESSING
+# ---------------------------------------------------------------------------
+
+def normalise_text(text):
+    """Lowercase text and remove extra spacing."""
+    if not isinstance(text, str):
+        text = str(text)
+    text = text.lower().strip()
+    text = text.replace("’", "'")
+    text = text.replace("doesn't", "doesnt")
+    text = text.replace("can't", "cannot")
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def remove_punctuation(text):
+    """Remove punctuation while keeping words readable."""
+    return text.translate(str.maketrans({char: " " for char in string.punctuation}))
+
+
+def tokenise_text(text):
+    """Split the sentence into a list of words using NLTK."""
+    try:
+        return word_tokenize(text)
+    except LookupError:
+        return re.findall(r"\b[\w']+\b", text)
+
+
+def lemmatise_tokens(tokens):
+    """Reduce words to simple dictionary form."""
+    lemmas = []
+    for token in tokens:
+        if token.isalpha():
+            base = lemmatizer.lemmatize(token, pos="v")
+            if base == token:
+                base = lemmatizer.lemmatize(token, pos="n")
+            lemmas.append(base)
+        else:
+            lemmas.append(token)
+    return lemmas
+
+
+def process_input(user_input):
+    """Return the cleaned input, tokens and lemmas for matching."""
+    cleaned = normalise_text(user_input)
+    no_punctuation = remove_punctuation(cleaned)
+    tokens = tokenise_text(no_punctuation)
+    lemmas = lemmatise_tokens(tokens)
+    return cleaned, tokens, lemmas
+
+
+# ---------------------------------------------------------------------------
+# 4. PART MATCHING LOGIC
+# ---------------------------------------------------------------------------
+
+def build_part_lookup():
+    """Create keywords so database matching is easier."""
+    lookup = {}
+    for item_name, info in VEX_DATABASE.items():
+        item_tokens = set(process_input(item_name)[2])
+        lookup[item_name] = item_tokens
+    return lookup
+
+
+PART_LOOKUP = build_part_lookup()
+
+
+def find_matching_parts(user_input):
+    """Return all likely matches for a VEX part query, then let the user choose if needed."""
+    cleaned, tokens, lemmas = process_input(user_input)
+    lowered_query = cleaned.lower()
+    if not cleaned:
+        return []
+
+    exact_sku = cleaned in {item["sku"] for item in VEX_DATABASE.values()}
+    if exact_sku:
+        for name, info in VEX_DATABASE.items():
+            if info["sku"] == cleaned:
+                return [name]
+
+    matches = []
+    for item_name, info in VEX_DATABASE.items():
+        item_lower = item_name.lower()
+        item_lemmas = set(process_input(item_name)[2])
+
+        score = 0
+        if cleaned == item_name:
+            score += 100
+        if lowered_query in item_lower:
+            score += 30
+        if item_lower.startswith(lowered_query):
+            score += 20
+        if any(token in item_lower for token in cleaned.split()):
+            score += 10
+        if cleaned in item_lower or item_lower in cleaned:
+            score += 15
+        score += sum(1 for lemma in lemmas if lemma in item_lemmas)
+
+        if score > 0:
+            matches.append((score, item_name))
+
+    if not matches:
+        return []
+
+    matches = sorted(matches, key=lambda entry: (-entry[0], len(entry[1]), entry[1]))
+    unique_matches = []
+    seen = set()
+    for _, item_name in matches:
+        if item_name not in seen:
+            unique_matches.append(item_name)
+            seen.add(item_name)
+
+    return unique_matches
+
+
+def find_part(user_input):
+    """Keep compatibility with older logic by returning the first best match."""
+    matches = find_matching_parts(user_input)
+    return matches[0] if matches else None
+
+
+def select_part_from_matches(user_input, matches):
+    """Ask the user to choose one item from a list of matching parts."""
+    if len(matches) == 1:
+        return matches[0]
+
+    print(f"{BOT_NAME}: I found {len(matches)} parts matching '{user_input}'.")
+    for index, item_name in enumerate(matches[:10], start=1):
+        info = VEX_DATABASE[item_name]
+        print(f"  {index}. {item_name} - SKU: {info['sku']} - ${info['price']:.2f}")
+
+    if len(matches) > 10:
+        print(f"  ... and {len(matches) - 10} more matches.")
+
+    while True:
+        choice = input("Please enter the number of the item you want to select: ").strip()
+        if choice.isdigit():
+            choice_index = int(choice) - 1
+            if 0 <= choice_index < len(matches):
+                return matches[choice_index]
+        print(f"{BOT_NAME}: That selection is not valid. Please choose a number from the list.")
+
+
+# ---------------------------------------------------------------------------
+# 5. ORDERING FUNCTIONS
+# ---------------------------------------------------------------------------
+
+def print_cart(cart):
+    """Show the cart contents clearly."""
+    if not cart:
+        print("Your cart is empty.")
+        return
+
+    print("\nCurrent cart:")
+    for index, item in enumerate(cart, start=1):
+        print(f"{index}. {item['name']} - SKU: {item['sku']} - ${item['price']:.2f}")
+
+
+def add_to_cart(cart, part_name):
+    """Add a chosen part to the shopping cart."""
+    item = VEX_DATABASE[part_name]
+    cart.append({
+        "name": part_name,
+        "sku": item["sku"],
+        "price": item["price"],
+        "category": item["category"],
+    })
+
+
+def calculate_total(cart):
+    """Return the cart total."""
+    return sum(item["price"] for item in cart)
+
+
+def show_checkout(cart):
+    """Display a final order summary and total."""
+    total = calculate_total(cart)
+    print("\nCHECKOUT")
+    print("=" * 50)
+    if not cart:
+        print("There are no items in your order.")
+        return total
+
+    for item in cart:
+        print(f"- {item['name']} | SKU: {item['sku']} | ${item['price']:.2f}")
+    print(f"\nTotal: ${total:.2f}")
+    print("=" * 50)
+    return total
+
+
+# ---------------------------------------------------------------------------
+# 6. EMAIL FUNCTION
+# ---------------------------------------------------------------------------
+
+def send_order_email(email_address, cart, total):
+    """Send the order summary by email if SMTP is configured, otherwise prompt for SMTP details."""
+    subject = "VEX Order Confirmation"
+    body_lines = [
+        "VEX Smart Bot Order Confirmation",
+        "",
+        "Items:",
+    ]
+
+    for item in cart:
+        body_lines.append(f"- {item['name']} | SKU: {item['sku']} | ${item['price']:.2f}")
+
+    body_lines.extend([
+        "",
+        f"Total: ${total:.2f}",
+        "",
+        "Thank you for ordering with VEX Smart Bot.",
+    ])
+
+    message_body = "\n".join(body_lines)
+
+    smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_user = os.getenv("SMTP_USER", "devinc@pedarecc.sa.edu.au")
+    smtp_pass = os.getenv("SMTP_PASS", "hjuv hlkb eqoy ketn")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    sender_email = os.getenv("SMTP_FROM", "devinc@pedarecc.sa.edu.au") or email_address
+
+    if not smtp_host or not smtp_user or not smtp_pass:
+        print("\nSMTP is not configured, so the bot needs your SMTP details to send the order email.")
+        smtp_host = input("SMTP host (for example: smtp.gmail.com): ").strip() or smtp_host
+        smtp_port = int(input("SMTP port (default 587): ").strip() or smtp_port)
+        smtp_user = input("SMTP username/email: ").strip() or smtp_user
+        smtp_pass = input("SMTP password: ").strip() or smtp_pass
+        sender_email = os.getenv("SMTP_FROM", SMTP_FROM) or smtp_user
+
+    if not smtp_host or not smtp_user or not smtp_pass:
+        print("\nEmail preview:")
+        print(f"To: {email_address}")
+        print(f"Subject: {subject}")
+        print(message_body)
+        print("\nNote: SMTP details were missing, so the email was only previewed locally.")
+        return True
+
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = sender_email
+        msg["To"] = email_address
+        msg.set_content(message_body)
+
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+
+        print(f"\nOrder summary sent successfully to {email_address}.")
+        return True
+    except Exception as error:
+        print(f"\nEmail could not be sent: {error}")
+        print("The order is still recorded in the cart for later use.")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# 7. MAIN ORDERING LOOP
+# ---------------------------------------------------------------------------
+
+def ask_question(prompt):
+    """Keep asking until something is entered."""
+    while True:
+        answer = input(prompt)
+        if answer.strip():
+            return answer
+        print(f"{BOT_NAME}: Please type a valid part name, SKU, or 'done'.")
+
+
+def show_welcome():
+    """Display the welcome banner."""
+    print("=" * 60)
+    print("Welcome to the VEX Smart Bot ordering system!")
+    print("You can enter part names or SKUs to build your order.")
+    print("Type 'done' when you are finished adding parts.")
+    print("Type 'quit' to exit at any time.")
+    print("=" * 60)
+
+
+def main():
+    """Run the VEX order flow."""
+    show_welcome()
+    cart = []
+
+    while True:
+        part_input = ask_question("\nWhat part would you like to order? (or type 'done'): ")
+        if normalise_text(part_input) in EXIT_COMMANDS:
+            print(f"{BOT_NAME}: Your order has been cancelled. Goodbye!")
+            break
+
+        if normalise_text(part_input) == "done":
+            break
+
+        matches = find_matching_parts(part_input)
+        if not matches:
+            print(f"{BOT_NAME}: I could not find that part. Try a VEX product name or SKU such as 'motor' or 'wheel'.")
+            continue
+
+        chosen_part = select_part_from_matches(part_input, matches)
+        add_to_cart(cart, chosen_part)
+        print(f"{BOT_NAME}: Added {chosen_part} to your order.")
+        print_cart(cart)
+
+        another = input("Would you like to add another part? (yes/no): ")
+        if normalise_text(another) in EXIT_COMMANDS:
+            print(f"{BOT_NAME}: Your order has been cancelled. Goodbye!")
+            break
+        if normalise_text(another) in {"no", "n"}:
+            break
+
+    total = show_checkout(cart)
+    if not cart:
+        print(f"{BOT_NAME}: No items were added to your order.")
+        return
+
+    confirm = input("\nWould you like to confirm this order? (yes/no): ")
+    if normalise_text(confirm) in EXIT_COMMANDS or normalise_text(confirm) in {"no", "n"}:
+        print(f"{BOT_NAME}: Order not confirmed. Thank you for using VEX Smart Bot.")
+        return
+
+    email_address = input("Please enter the email address to send the order summary: ").strip()
+    if not email_address or "@" not in email_address:
+        print(f"{BOT_NAME}: That email address is not valid. Please try again.")
+        email_address = input("Please enter a valid email address: ").strip()
+
+    send_order_email(email_address, cart, total)
+    print(f"{BOT_NAME}: Your VEX order is confirmed and the summary has been sent.")
+
+
+if __name__ == "__main__":
+    main()
