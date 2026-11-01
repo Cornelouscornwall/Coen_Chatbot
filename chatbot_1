@@ -38,70 +38,38 @@ Ask: Would you like to confirm the order?
   V
 END
 
-
-Peer testing and refinement
----------------------------
-- Break It Test: typed different word forms such as 'motor', 'motors', and 'wheel' to confirm the keyword matching still works.
-- Noise Test: entered filler-heavy sentences to test whether the bot still recognised the correct VEX part.
-- Refinement: added lemmatisation so words such as 'motors' and 'running' still match the correct database item when relevant.
-
 This script uses:
 - lowercase normalization
 - tokenization with word_tokenize()
-- lemmatisation with WordNetLemmatizer()
+- NLTK tokenization and lemmatisation when available, with offline fallbacks
 - while-loop ordering flow
 - checkout + confirmation + email sending
 """
 
 import os
-import random
 import re
 import smtplib
 import string
+import webbrowser
 from email.message import EmailMessage
 
-import nltk
-from nltk.stem import WordNetLemmatizer
-from nltk.tokenize import word_tokenize
+try:
+    from nltk.stem import PorterStemmer, WordNetLemmatizer
+    from nltk.tokenize import word_tokenize as nltk_word_tokenize
 
+    _wordnet_lemmatizer = WordNetLemmatizer()
+    _porter_stemmer = PorterStemmer()
+except ImportError:
+    nltk_word_tokenize = None
+    _wordnet_lemmatizer = None
+    _porter_stemmer = None
 
 # ---------------------------------------------------------------------------
-# 1. NLTK SETUP
+# 1. TEXT PROCESSING SETUP
 # ---------------------------------------------------------------------------
-
-def setup_nltk():
-    """Download missing NLTK resources safely."""
-    resources = [
-        ("tokenizers/punkt", "punkt"),
-        ("tokenizers/punkt_tab", "punkt_tab"),
-        ("corpora/wordnet", "wordnet"),
-        ("corpora/omw-1.4", "omw-1.4"),
-    ]
-
-    for resource_path, package_name in resources:
-        try:
-            nltk.data.find(resource_path)
-        except (LookupError, OSError, FileNotFoundError):
-            try:
-                nltk.download(package_name, quiet=True)
-            except Exception:
-                pass
-
-
-setup_nltk()
-lemmatizer = WordNetLemmatizer()
 
 BOT_NAME = "VEX Smart Bot"
 EXIT_COMMANDS = {"quit", "exit", "bye", "goodbye", "stop"}
-
-# Default SMTP settings for automatic autofill.
-# Change these to your real Gmail/Outlook details before running the bot.
-SMTP_HOST = "smtp.gmail.com"
-SMTP_PORT = 587
-SMTP_USER = "your_email@gmail.com"
-SMTP_PASS = "your_app_password_here"
-SMTP_FROM = "your_email@gmail.com"
-
 
 # ---------------------------------------------------------------------------
 # 2. VEX PART DATABASE
@@ -236,6 +204,65 @@ VEX_DATABASE = {
     "standoff": {"sku": "276-1010", "price": 5.99, "category": "hardware"},
     "pneumatic": {"sku": "276-8341", "price": 149.99, "category": "pneumatics"},
 };
+
+# Store a VEX product page link with every catalog item. Some VEX parts are
+# sold as options on a shared product page, so those use their family page.
+VEX_STORE_URL = os.getenv("VEX_STORE_URL", "https://www.vexrobotics.com").rstrip("/")
+VEX_CATEGORY_PAGES = {
+    "motors": "276-4840.html",
+    "cables": "v5-smart-cables.html",
+    "wheels": "wheels.html",
+    "flex wheels": "compression-wheels.html",
+    "gears": "gears.html",
+    "aluminum": "v5-structure.html",
+    "steel": "v5-structure.html",
+    "gussets": "v5-structure.html",
+    "pneumatics": "spare-pneumatics.html",
+}
+VEX_PRODUCT_PAGE_OVERRIDES = {
+    "v5 robot brain": "276-4810.html",
+    "v5 robot battery li ion 1100mah": "batteries-and-chargers.html",
+    "v5 robot battery charger": "v5-battery-charger.html",
+    "v5 controller": "276-4820.html",
+    "v5 robot radio": "276-4831.html",
+    "v5 vision sensor": "276-4850.html",
+    "ai vision sensor": "276-4850.html",
+    "v5 optical sensor": "276-7043.html",
+    "v5 distance sensor": "276-4852.html",
+    "v5 inertial sensor": "276-4855.html",
+    "v5 rotation sensor": "276-6050.html",
+    "bumper switch v2": "276-4858.html",
+    "standard steel shaft 12 inch 4 pack": "drive-shafts.html",
+    "shaft": "drive-shafts.html",
+    "high strength steel shaft 12 inch 4 pack": "hs-hardware.html",
+    "standoff": "standoffs-8-32.html",
+    "linear motion kit": "gears.html",
+}
+for _part_name, _part_info in VEX_DATABASE.items():
+    _page = VEX_PRODUCT_PAGE_OVERRIDES.get(
+        _part_name,
+        VEX_CATEGORY_PAGES.get(_part_info["category"], f"{_part_info['sku']}.html"),
+    )
+    if _part_info["category"] == "pneumatics" and "kit" in _part_name:
+        _page = "276-8750.html"
+    if _part_info["category"] == "hardware":
+        if "screw" in _part_name:
+            _page = "all-screws.html"
+        elif "nut" in _part_name:
+            _page = "nuts-8-32.html"
+        elif "high strength" in _part_name and ("shaft" in _part_name or "standoff" in _part_name):
+            _page = "hs-hardware.html"
+        elif "bearing" in _part_name:
+            _page = "v5-bearings.html"
+        elif "collar" in _part_name:
+            _page = "v5-shaft-collars.html"
+        elif "standoff" in _part_name:
+            _page = "standoffs-8-32.html"
+        elif "shaft" in _part_name:
+            _page = "drive-shafts.html"
+    _part_info["product_url"] = f"{VEX_STORE_URL}/{_page}"
+    _part_info["quick_order_url"] = f"{VEX_STORE_URL}/quickorder/"
+
 # ---------------------------------------------------------------------------
 # 3. TEXT PROCESSING
 # ---------------------------------------------------------------------------
@@ -258,21 +285,38 @@ def remove_punctuation(text):
 
 
 def tokenise_text(text):
-    """Split the sentence into a list of words using NLTK."""
-    try:
-        return word_tokenize(text)
-    except LookupError:
-        return re.findall(r"\b[\w']+\b", text)
+    """Use NLTK tokenization when installed, with a dependency-free fallback."""
+    if nltk_word_tokenize:
+        try:
+            # preserve_line avoids requiring downloaded Punkt models.
+            return nltk_word_tokenize(text, preserve_line=True)
+        except LookupError:
+            pass
+    return re.findall(r"\b[\w']+\b", text)
 
 
 def lemmatise_tokens(tokens):
-    """Reduce words to simple dictionary form."""
+    """Use WordNet lemmatisation, then NLTK stemming if WordNet is unavailable."""
     lemmas = []
     for token in tokens:
         if token.isalpha():
-            base = lemmatizer.lemmatize(token, pos="v")
-            if base == token:
-                base = lemmatizer.lemmatize(token, pos="n")
+            base = token
+            if _wordnet_lemmatizer:
+                try:
+                    base = _wordnet_lemmatizer.lemmatize(token, pos="v")
+                    if base == token:
+                        base = _wordnet_lemmatizer.lemmatize(token, pos="n")
+                except LookupError:
+                    base = _porter_stemmer.stem(token) if _porter_stemmer else token
+            elif _porter_stemmer:
+                base = _porter_stemmer.stem(token)
+            else:
+                if len(token) > 4 and token.endswith("ies"):
+                    base = token[:-3] + "y"
+                elif len(token) > 4 and token.endswith("s") and not token.endswith("ss"):
+                    base = token[:-1]
+                elif len(token) > 5 and token.endswith("ing"):
+                    base = token[:-3]
             lemmas.append(base)
         else:
             lemmas.append(token)
@@ -366,7 +410,7 @@ def select_part_from_matches(user_input, matches):
     print(f"{BOT_NAME}: I found {len(matches)} parts matching '{user_input}'.")
     for index, item_name in enumerate(matches[:10], start=1):
         info = VEX_DATABASE[item_name]
-        print(f"  {index}. {item_name} - SKU: {info['sku']} - ${info['price']:.2f}")
+        print(f"  {index}. {item_name} - SKU: {info['sku']} - ${info['price']:.2f}\n     Product page: {info['product_url']}")
 
     if len(matches) > 10:
         print(f"  ... and {len(matches) - 10} more matches.")
@@ -392,23 +436,54 @@ def print_cart(cart):
 
     print("\nCurrent cart:")
     for index, item in enumerate(cart, start=1):
-        print(f"{index}. {item['name']} - SKU: {item['sku']} - ${item['price']:.2f}")
+        print(f"{index}. {item['name']} x{item['quantity']} - SKU: {item['sku']} - ${item['price'] * item['quantity']:.2f}\n   VEX product page: {item['product_url']}\n   VEX Quick Order: {item['quick_order_url']}")
+
+
+def get_product_links(database=VEX_DATABASE):
+    """Pull product names, SKUs, and URLs from the parts database."""
+    return [
+        (part_name, details["sku"], details["product_url"])
+        for part_name, details in database.items()
+    ]
+
+
+def display_product_links(database=VEX_DATABASE):
+    """Display product links and optionally open one in the web browser."""
+    links = get_product_links(database)
+    print(f"\nVEX product links ({len(links)} parts):")
+    for number, (part_name, sku, product_url) in enumerate(links, start=1):
+        print(f"{number:>3}. {part_name} | SKU {sku} | {product_url}")
+
+    choice = input("Enter a part number to open its VEX page, or press Enter to return: ").strip()
+    if choice.isdigit() and 1 <= int(choice) <= len(links):
+        product_url = links[int(choice) - 1][2]
+        if webbrowser.open(product_url):
+            print("Opening the VEX product page in your browser.")
+        else:
+            print(f"Could not launch a browser. Open this URL manually: {product_url}")
 
 
 def add_to_cart(cart, part_name):
     """Add a chosen part to the shopping cart."""
     item = VEX_DATABASE[part_name]
+    existing = next((row for row in cart if row["name"] == part_name), None)
+    if existing:
+        existing["quantity"] += 1
+        return
     cart.append({
         "name": part_name,
         "sku": item["sku"],
         "price": item["price"],
         "category": item["category"],
+        "quantity": 1,
+        "product_url": item["product_url"],
+        "quick_order_url": item["quick_order_url"],
     })
 
 
 def calculate_total(cart):
     """Return the cart total."""
-    return sum(item["price"] for item in cart)
+    return sum(item["price"] * item["quantity"] for item in cart)
 
 
 def show_checkout(cart):
@@ -421,7 +496,7 @@ def show_checkout(cart):
         return total
 
     for item in cart:
-        print(f"- {item['name']} | SKU: {item['sku']} | ${item['price']:.2f}")
+        print(f"- {item['name']} x{item['quantity']} | SKU: {item['sku']} | ${item['price'] * item['quantity']:.2f}\n  VEX product page: {item['product_url']}\n  VEX Quick Order: {item['quick_order_url']}")
     print(f"\nTotal: ${total:.2f}")
     print("=" * 50)
     return total
@@ -432,7 +507,7 @@ def show_checkout(cart):
 # ---------------------------------------------------------------------------
 
 def send_order_email(email_address, cart, total):
-    """Send the order summary by email if SMTP is configured, otherwise prompt for SMTP details."""
+    """Send an order summary if SMTP is configured; otherwise show a preview."""
     subject = "VEX Order Confirmation"
     body_lines = [
         "VEX Smart Bot Order Confirmation",
@@ -441,7 +516,7 @@ def send_order_email(email_address, cart, total):
     ]
 
     for item in cart:
-        body_lines.append(f"- {item['name']} | SKU: {item['sku']} | ${item['price']:.2f}")
+        body_lines.append(f"- {item['name']} x{item['quantity']} | SKU: {item['sku']} | ${item['price'] * item['quantity']:.2f} | Product: {item['product_url']} | Quick Order: {item['quick_order_url']}")
 
     body_lines.extend([
         "",
@@ -454,25 +529,22 @@ def send_order_email(email_address, cart, total):
 
     smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
     smtp_user = os.getenv("SMTP_USER", "devinc@pedarecc.sa.edu.au")
-    smtp_pass = os.getenv("SMTP_PASS", "hjuv hlkb eqoy ketn")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    sender_email = os.getenv("SMTP_FROM", "devinc@pedarecc.sa.edu.au") or email_address
+    smtp_pass = os.getenv("SMTP_PASS", "apfm erct wcgq nqpz")
+    try:
+        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    except ValueError:
+        print("SMTP_PORT must be a number. Email was not sent.")
+        return False
+    sender_email = os.getenv("SMTP_FROM", "") or smtp_user
 
     if not smtp_host or not smtp_user or not smtp_pass:
-        print("\nSMTP is not configured, so the bot needs your SMTP details to send the order email.")
-        smtp_host = input("SMTP host (for example: smtp.gmail.com): ").strip() or smtp_host
-        smtp_port = int(input("SMTP port (default 587): ").strip() or smtp_port)
-        smtp_user = input("SMTP username/email: ").strip() or smtp_user
-        smtp_pass = input("SMTP password: ").strip() or smtp_pass
-        sender_email = os.getenv("SMTP_FROM", SMTP_FROM) or smtp_user
-
-    if not smtp_host or not smtp_user or not smtp_pass:
+        print("\nSMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and optionally SMTP_FROM to enable sending.")
         print("\nEmail preview:")
         print(f"To: {email_address}")
         print(f"Subject: {subject}")
         print(message_body)
         print("\nNote: SMTP details were missing, so the email was only previewed locally.")
-        return True
+        return False
 
     try:
         msg = EmailMessage()
@@ -512,6 +584,7 @@ def show_welcome():
     print("=" * 60)
     print("Welcome to the VEX Smart Bot ordering system!")
     print("You can enter part names or SKUs to build your order.")
+    print("Type 'links' to display product page links for the parts database.")
     print("Type 'done' when you are finished adding parts.")
     print("Type 'quit' to exit at any time.")
     print("=" * 60)
@@ -528,6 +601,10 @@ def main():
             print(f"{BOT_NAME}: Your order has been cancelled. Goodbye!")
             break
 
+        if normalise_text(part_input) in {"links", "show links", "product links"}:
+            display_product_links()
+            continue
+
         if normalise_text(part_input) == "done":
             break
 
@@ -538,7 +615,7 @@ def main():
 
         chosen_part = select_part_from_matches(part_input, matches)
         add_to_cart(cart, chosen_part)
-        print(f"{BOT_NAME}: Added {chosen_part} to your order.")
+        print(f"{BOT_NAME}: Added {chosen_part} to your order. The VEX product link is in your parts list.")
         print_cart(cart)
 
         another = input("Would you like to add another part? (yes/no): ")
@@ -553,18 +630,20 @@ def main():
         print(f"{BOT_NAME}: No items were added to your order.")
         return
 
-    confirm = input("\nWould you like to confirm this order? (yes/no): ")
-    if normalise_text(confirm) in EXIT_COMMANDS or normalise_text(confirm) in {"no", "n"}:
+    confirm = input("\nWould you like to confirm this order summary? (yes/no): ")
+    if normalise_text(confirm) not in {"yes", "y"}:
         print(f"{BOT_NAME}: Order not confirmed. Thank you for using VEX Smart Bot.")
         return
 
     email_address = input("Please enter the email address to send the order summary: ").strip()
-    if not email_address or "@" not in email_address:
-        print(f"{BOT_NAME}: That email address is not valid. Please try again.")
+    while not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email_address):
+        print(f"{BOT_NAME}: That email address is not valid.")
         email_address = input("Please enter a valid email address: ").strip()
 
-    send_order_email(email_address, cart, total)
-    print(f"{BOT_NAME}: Your VEX order is confirmed and the summary has been sent.")
+    if send_order_email(email_address, cart, total):
+        print(f"{BOT_NAME}: The order summary was emailed. You still need to place the order on VEX.")
+    else:
+        print(f"{BOT_NAME}: The order summary was not emailed. Use the VEX links above to place the order.")
 
 
 if __name__ == "__main__":
